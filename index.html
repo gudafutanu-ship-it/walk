@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音声ウォーキングナビ</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #f0f4f8;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            background: #fff;
+            padding: 25px;
+            border-radius: 16px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 380px;
+            text-align: center;
+        }
+        h1 { font-size: 1.3rem; margin-bottom: 20px; color: #2c3e50; }
+        .btn-toggle {
+            width: 100%;
+            padding: 15px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 10px;
+            color: #fff;
+            background-color: #2ecc71;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+        .btn-toggle.active { background-color: #e74c3c; }
+        .data-box {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 10px;
+            text-align: left;
+        }
+        .data-label { font-size: 0.8rem; color: #7f8c8d; }
+        .data-val { font-size: 1.2rem; font-weight: bold; color: #2c3e50; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>音声ウォーキングナビ</h1>
+    <button id="toggleBtn" class="btn-toggle" onclick="toggleTracking()">計測スタート</button>
+
+    <div class="data-box">
+        <div class="data-label">進行方向</div>
+        <div class="data-val" id="dirVal">---</div>
+    </div>
+    <div class="data-box">
+        <div class="data-label">経過時間</div>
+        <div class="data-val" id="timeVal">0分</div>
+    </div>
+    <div class="data-box">
+        <div class="data-label">移動距離</div>
+        <div class="data-val" id="distVal">0 m</div>
+    </div>
+</div>
+
+<script>
+    let isTracking = false;
+    let watchId = null;
+    let timerId = null;
+    
+    let startTime = null;
+    let totalDistance = 0;
+    let lastLat = null;
+    let lastLng = null;
+    let currentHeading = "不明";
+    let lastAnnouncedMinute = 0;
+
+    function toggleTracking() {
+        const btn = document.getElementById('toggleBtn');
+        if (isTracking) {
+            // 停止
+            isTracking = false;
+            navigator.geolocation.clearWatch(watchId);
+            clearInterval(timerId);
+            btn.textContent = "計測スタート";
+            btn.classList.remove('active');
+            speak("計測を終了しました");
+        } else {
+            // 開始（位置情報の許可が必要）
+            if (!navigator.geolocation) {
+                alert("お使いのブラウザはGPSに対応していません");
+                return;
+            }
+            isTracking = true;
+            startTime = new Date();
+            totalDistance = 0;
+            lastLat = null;
+            lastLng = null;
+            lastAnnouncedMinute = 0;
+
+            btn.textContent = "計測ストップ";
+            btn.classList.add('active');
+            speak("ウォーキングの計測を開始します");
+
+            // GPS追跡スタート
+            watchId = navigator.geolocation.watchPosition(updatePosition, handleError, {
+                enableHighAccuracy: true,
+                maximumAge: 0,
+                timeout: 10000
+            });
+
+            // 1分ごとに経過時間と距離を定期チェック・読み上げ
+            timerId = setInterval(checkTimeAndAnnounce, 10000); // 10秒ごとに条件判定
+        }
+    }
+
+    function updatePosition(pos) {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const heading = pos.coords.heading; // 移動方位 (0~360度)
+
+        // 方位の更新
+        if (heading !== null && !isNaN(heading)) {
+            const newHeading = getDirection(heading);
+            if (newHeading !== currentHeading) {
+                currentHeading = newHeading;
+                document.getElementById('dirVal').textContent = currentHeading;
+                speak(`現在、${currentHeading}に向かって歩いています`);
+            }
+        }
+
+        // 距離の計算
+        if (lastLat !== null && lastLng !== null) {
+            const d = calculateDistance(lastLat, lastLng, lat, lng);
+            // 誤検知を防ぐため、一度に2m以上動いた場合のみ加算
+            if (d > 2) {
+                totalDistance += d;
+                document.getElementById('distVal').textContent = `${Math.round(totalDistance)} m`;
+                lastLat = lat;
+                lastLng = lng;
+            }
+        } else {
+            lastLat = lat;
+            lastLng = lng;
+        }
+    }
+
+    // 時間経過の判定と読み上げ（1分ごと）
+    function checkTimeAndAnnounce() {
+        if (!isTracking || !startTime) return;
+        
+        const now = new Date();
+        const elapsedMinutes = Math.floor((now - startTime) / 60000);
+
+        document.getElementById('timeVal').textContent = `${elapsedMinutes}分`;
+
+        // 1分経過するごとに音声でお知らせ
+        if (elapsedMinutes > 0 && elapsedMinutes > lastAnnouncedMinute) {
+            lastAnnouncedMinute = elapsedMinutes;
+            const dist = Math.round(totalDistance);
+            speak(`歩き出して${elapsedMinutes}分経過しました。現在およそ${dist}メートル歩きました。`);
+        }
+    }
+
+    // 緯度経度から方位（方角）を計算
+    function getDirection(deg) {
+        if (deg >= 337.5 || deg < 22.5) return "北";
+        if (deg >= 22.5 && deg < 67.5) return "北東";
+        if (deg >= 67.5 && deg < 112.5) return "東";
+        if (deg >= 112.5 && deg < 157.5) return "南東";
+        if (deg >= 157.5 && deg < 202.5) return "南";
+        if (deg >= 202.5 && deg < 247.5) return "南西";
+        if (deg >= 247.5 && deg < 292.5) return "西";
+        if (deg >= 292.5 && deg < 337.5) return "北西";
+        return "不明";
+    }
+
+    // 2点間の距離(m)を計算する数式（ヒュベニの公式簡易版）
+    function calculateDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371000; // 地球の半径 (m)
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+    }
+
+    function handleError(err) {
+        console.warn('GPSエラー: ' + err.message);
+    }
+
+    function speak(text) {
+        if ('speechSynthesis' in window) {
+            speechSynthesis.cancel();
+            const uttr = new SpeechSynthesisUtterance(text);
+            uttr.lang = 'ja-JP';
+            uttr.rate = 1.0;
+            speechSynthesis.speak(uttr);
+        }
+    }
+</script>
+
+</body>
+</html>
